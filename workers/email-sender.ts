@@ -5,10 +5,15 @@
 /**
  * Email sending via Cloudflare Email Service binding.
  *
- * Uses the `send_email` Worker binding (`env.EMAIL.send()`) to send emails.
+ * Builds the RFC 5322 message with mimetext (full control over multipart
+ * structure and Content-ID headers for inline images) and sends it through
+ * the `EMAIL` SendEmail binding as a raw EmailMessage.
  *
  * See: https://developers.cloudflare.com/email-service/api/send-emails/workers-api/
  */
+
+import { EmailMessage } from "cloudflare:email";
+import { createMimeMessage, Mailbox } from "mimetext";
 
 export interface SendEmailParams {
 	to: string | string[];
@@ -29,6 +34,21 @@ export interface SendEmailParams {
 	headers?: Record<string, string>;
 }
 
+function toAddressList(value: string | string[] | undefined): string[] {
+	if (!value) return [];
+	return (Array.isArray(value) ? value : [value]).filter(Boolean);
+}
+
+function utf8ToBase64(value: string): string {
+	const bytes = new TextEncoder().encode(value);
+	let binary = "";
+	const chunkSize = 0x8000;
+	for (let i = 0; i < bytes.length; i += chunkSize) {
+		binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+	}
+	return btoa(binary);
+}
+
 /**
  * Send an email using the Cloudflare Email Service binding.
  *
@@ -41,84 +61,115 @@ export async function sendEmail(
 	binding: SendEmail,
 	params: SendEmailParams,
 ): Promise<{ messageId: string }> {
-	const message: Record<string, unknown> = {
-		to: params.to,
-		from: params.from,
-		subject: params.subject,
-	};
+	const from: { email: string; name?: string } =
+		typeof params.from === "string" ? { email: params.from } : params.from;
+	const toList = toAddressList(params.to);
+	const ccList = toAddressList(params.cc);
+	const bccList = toAddressList(params.bcc);
 
-	if (params.html) message.html = params.html;
-	if (params.text) message.text = params.text;
-	if (params.cc) message.cc = params.cc;
-	if (params.bcc) message.bcc = params.bcc;
-	if (params.replyTo) message.replyTo = params.replyTo;
-
-	if (params.headers && Object.keys(params.headers).length > 0) {
-		message.headers = params.headers;
+	const msg = createMimeMessage();
+	msg.setSender({ addr: from.email, ...(from.name ? { name: from.name } : {}) });
+	msg.setTo(toList);
+	if (ccList.length > 0) msg.setCc(ccList);
+	// Bcc is envelope-only by design: never written into the message headers.
+	msg.setSubject(params.subject);
+	if (params.replyTo) {
+		const replyTo =
+			typeof params.replyTo === "string"
+				? params.replyTo
+				: `"${params.replyTo.name}" <${params.replyTo.email}>`;
+		msg.setHeader("Reply-To", new Mailbox(replyTo, { type: "From" }));
+	}
+	if (params.headers) {
+		for (const [name, value] of Object.entries(params.headers)) {
+			msg.setHeader(name, value);
+		}
 	}
 
-	if (params.attachments && params.attachments.length > 0) {
-		message.attachments = params.attachments.map((att) => ({
-			content: att.content,
+	// Bodies are base64-encoded so non-ASCII content survives transport.
+	if (params.text) {
+		msg.addMessage({
+			contentType: "text/plain",
+			data: utf8ToBase64(params.text),
+			encoding: "base64",
+		});
+	}
+	if (params.html) {
+		msg.addMessage({
+			contentType: "text/html",
+			data: utf8ToBase64(params.html),
+			encoding: "base64",
+		});
+	}
+
+	for (const att of params.attachments ?? []) {
+		msg.addAttachment({
 			filename: att.filename,
-			type: att.type,
-			disposition: att.disposition,
-			...(att.contentId ? { contentId: att.contentId } : {}),
-		}));
+			contentType: att.type,
+			data: att.content, // already base64
+			encoding: "base64",
+			inline: att.disposition === "inline",
+			// mimetext wraps bare Content-ID values in <...> automatically
+			...(att.contentId ? { headers: { "Content-ID": att.contentId } } : {}),
+		});
 	}
 
-	let result: { messageId: string } | null = null;
-	let sendError: unknown = null;
-	try {
-		result = await binding.send(message as any);
-	} catch (e) {
-		sendError = e;
+	const raw = msg.asRaw();
+
+	// EmailMessage accepts a single envelope recipient; send one copy each.
+	const recipients = [...new Set([...toList, ...ccList, ...bccList])];
+	const outcomes: string[] = [];
+	let firstMessageId: string | null = null;
+	let firstError: unknown = null;
+	for (const rcpt of recipients) {
+		try {
+			const result = await binding.send(
+				new EmailMessage(from.email, rcpt, raw),
+			);
+			firstMessageId ??= result.messageId;
+			outcomes.push(`${rcpt}: OK messageId=${result.messageId}`);
+		} catch (e) {
+			firstError ??= e;
+			outcomes.push(
+				`${rcpt}: FAILED ${(e as Error)?.message} (code ${(e as { code?: string })?.code ?? "?"})`,
+			);
+		}
 	}
 
-	await reportSendDebug(binding, params, message, result, sendError);
+	await reportSendDebug(binding, params, from, raw, outcomes);
 
-	if (sendError) throw sendError;
-	return { messageId: result!.messageId };
+	if (!firstMessageId && firstError) throw firstError;
+	return { messageId: firstMessageId ?? "" };
 }
 
 /**
  * Temporary diagnostics for inline-image sending.
- * Logs the exact payload handed to the EMAIL binding and delivers it as a
- * plain-text follow-up email to the same recipient, so the result can be
- * inspected in the recipient's mailbox.
+ * Logs the generated raw MIME (long lines truncated) and delivers it as a
+ * plain-text follow-up email to the same recipients, so the exact bytes
+ * handed to the Email Service can be inspected in the recipient's mailbox.
  */
 async function reportSendDebug(
 	binding: SendEmail,
 	params: SendEmailParams,
-	message: Record<string, unknown>,
-	result: { messageId: string } | null,
-	sendError: unknown,
+	from: { email: string; name?: string },
+	raw: string,
+	outcomes: string[],
 ): Promise<void> {
 	try {
-		const cidRefs = params.html?.match(/cid:[^"'\s>]+/g) ?? [];
-		const attachments = (message.attachments as SendEmailParams["attachments"]) ?? [];
-		const lines = [
+		const rawPreview = raw
+			.split(/\r?\n/)
+			.map((line) =>
+				line.length > 200 ? `${line.slice(0, 200)}... [${line.length} chars]` : line,
+			)
+			.join("\n");
+		const log = [
 			`time: ${new Date().toISOString()}`,
-			`to: ${JSON.stringify(params.to)}`,
-			`from: ${JSON.stringify(params.from)}`,
-			`subject: ${params.subject}`,
-			`hasHtml: ${Boolean(params.html)} (length ${params.html?.length ?? 0})`,
-			`hasText: ${Boolean(params.text)} (length ${params.text?.length ?? 0})`,
-			`cid refs in html: ${cidRefs.length > 0 ? cidRefs.join(", ") : "(none)"}`,
-			`attachments: ${attachments.length}`,
-			...attachments.map((att, i) =>
-				[
-					`  [${i}] filename=${att.filename}`,
-					`type=${att.type}`,
-					`disposition=${att.disposition}`,
-					`contentId=${att.contentId ?? "(none)"}`,
-					`base64Length=${att.content.length}`,
-					`base64Head=${att.content.slice(0, 48)}...`,
-				].join(" "),
-			),
-			`result: ${result ? `OK messageId=${result.messageId}` : `FAILED ${(sendError as Error)?.message} (code ${(sendError as { code?: string })?.code ?? "?"})`}`,
-		];
-		const log = lines.join("\n");
+			`envelope-from: ${from.email}`,
+			`delivery: ${outcomes.join(" | ")}`,
+			"",
+			"--- raw MIME (truncated lines) ---",
+			rawPreview,
+		].join("\n");
 		console.log(`[send-debug]\n${log}`);
 
 		await binding.send({
