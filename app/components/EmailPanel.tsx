@@ -11,7 +11,7 @@ import EmailPanelHeader from "~/components/email-panel/EmailPanelHeader";
 import EmailPanelToolbar from "~/components/email-panel/EmailPanelToolbar";
 import SingleMessageView from "~/components/email-panel/SingleMessageView";
 import ThreadMessage from "~/components/email-panel/ThreadMessage";
-import { splitEmailList, toEmailListValue } from "~/lib/utils";
+import { extractInlineImages, splitEmailList, toEmailListValue } from "~/lib/utils";
 import api from "~/services/api";
 import { useDeleteEmail, useEmail, useMoveEmail, useReplyToEmail, useSendEmail, useThreadReplies, useUpdateEmail } from "~/queries/emails";
 import { useFolders } from "~/queries/folders";
@@ -118,14 +118,16 @@ export default function EmailPanel({ emailId }: { emailId: string }) {
 			const fromName = currentMailbox.settings?.fromName || currentMailbox.name;
 			const from = fromName && fromName !== currentMailbox.email ? { email: currentMailbox.email, name: fromName } : currentMailbox.email;
 			const originalEmail = target.in_reply_to ? allMessages.find((msg) => msg.id === target.in_reply_to) : undefined;
+			const { html, attachments } = extractInlineImages(target.body || "");
 			const emailData = {
 				to: toEmailListValue(toRecipients),
 				cc: toEmailListValue(splitEmailList(target.cc)),
 				bcc: toEmailListValue(splitEmailList(target.bcc)),
 				from,
 				subject: target.subject || "(no subject)",
-				html: target.body || "",
+				html,
 				text: target.body ? target.body.replace(/<[^>]*>/g, "").trim() : "",
+				...(attachments.length > 0 ? { attachments } : {}),
 			};
 			if (originalEmail) await replyMut.mutateAsync({ mailboxId, emailId: originalEmail.id, email: emailData }); else await sendEmailMut.mutateAsync({ mailboxId, email: emailData });
 			await deleteEmailMut.mutateAsync({ mailboxId, id: target.id });

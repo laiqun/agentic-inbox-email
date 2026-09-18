@@ -196,6 +196,69 @@ export function rewriteInlineImages(
 	return result;
 }
 
+export interface OutgoingInlineAttachment {
+	content: string; // base64 encoded
+	filename: string;
+	type: string;
+	disposition: "inline";
+	contentId: string;
+}
+
+const IMAGE_EXTENSIONS: Record<string, string> = {
+	"image/png": "png",
+	"image/jpeg": "jpg",
+	"image/gif": "gif",
+	"image/webp": "webp",
+	"image/svg+xml": "svg",
+	"image/bmp": "bmp",
+	"image/avif": "avif",
+};
+
+/**
+ * Extract embedded data-URI images from compose HTML into inline attachments.
+ * Rewrites each `<img src="data:...">` to a `cid:` reference so the backend can
+ * send them as proper MIME inline parts instead of bloated HTML.
+ */
+export function extractInlineImages(html: string): {
+	html: string;
+	attachments: OutgoingInlineAttachment[];
+} {
+	if (!html || !html.includes("<img") || !html.includes("data:image/")) {
+		return { html, attachments: [] };
+	}
+
+	const doc = new DOMParser().parseFromString(html, "text/html");
+	const images = Array.from(doc.querySelectorAll('img[src^="data:image/"]'));
+	if (images.length === 0) return { html, attachments: [] };
+
+	const attachments: OutgoingInlineAttachment[] = [];
+	const contentIdByDataUri = new Map<string, string>();
+
+	images.forEach((img) => {
+		const src = img.getAttribute("src");
+		if (!src) return;
+
+		let contentId = contentIdByDataUri.get(src);
+		if (!contentId) {
+			const match = /^data:([^;,]+);base64,([\s\S]*)$/.exec(src);
+			if (!match) return; // leave non-base64 data URIs untouched
+			const [, type, content] = match;
+			contentId = `${crypto.randomUUID()}@inline`;
+			contentIdByDataUri.set(src, contentId);
+			attachments.push({
+				content,
+				filename: `image-${attachments.length + 1}.${IMAGE_EXTENSIONS[type] ?? "png"}`,
+				type,
+				disposition: "inline",
+				contentId,
+			});
+		}
+		img.setAttribute("src", `cid:${contentId}`);
+	});
+
+	return { html: doc.body.innerHTML, attachments };
+}
+
 export function getNonInlineAttachments(attachments?: Attachment[]): Attachment[] {
 	return attachments?.filter((attachment) => attachment.disposition !== "inline") ?? [];
 }

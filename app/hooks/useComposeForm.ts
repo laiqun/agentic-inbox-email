@@ -7,6 +7,7 @@ import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
 	buildQuotedReplyBlock,
 	escapeHtml,
+	extractInlineImages,
 	formatComposeDate,
 	getSignatureBlock,
 	htmlToPlainText,
@@ -240,14 +241,16 @@ export function useComposeForm(mailboxId?: string, _folder?: string) {
 		const ccRecipients = splitEmailList(cc); const bccRecipients = splitEmailList(bcc);
 		const fromName = currentMailbox.settings?.fromName || currentMailbox.name;
 		const from = fromName && fromName !== currentMailbox.email ? { email: currentMailbox.email, name: fromName } : currentMailbox.email;
+		const { html, attachments } = extractInlineImages(body);
 		const emailData = {
 			to: toEmailListValue(toRecipients),
 			cc: toEmailListValue(ccRecipients),
 			bcc: toEmailListValue(bccRecipients),
 			from,
 			subject,
-			html: body,
+			html,
 			text: htmlToPlainText(body),
+			...(attachments.length > 0 ? { attachments } : {}),
 		};
 		const draftId = composeOptions.draftEmail?.id; const mode = composeOptions.mode; const originalId = composeOptions.originalEmail?.id || composeOptions.draftEmail?.in_reply_to;
 		setIsSending(true); toastManager.add({ title: "Sending email..." });

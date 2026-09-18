@@ -6,6 +6,7 @@ import { Button, Tooltip } from "@cloudflare/kumo";
 import {
 	ArrowClockwiseIcon,
 	ArrowCounterClockwiseIcon,
+	ImageIcon,
 	LinkBreakIcon,
 	LinkSimpleIcon,
 	ListBulletsIcon,
@@ -26,7 +27,31 @@ import { TextStyle } from "@tiptap/extension-text-style";
 import Underline from "@tiptap/extension-underline";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import { useCallback, useEffect } from "react";
+import type { EditorView } from "@tiptap/pm/view";
+import { useCallback, useEffect, useRef } from "react";
+
+function imageFilesFrom(fileList: FileList | null | undefined): File[] {
+	return Array.from(fileList ?? []).filter((file) =>
+		file.type.startsWith("image/"),
+	);
+}
+
+function insertImageFileAt(view: EditorView, file: File, pos?: number) {
+	const reader = new FileReader();
+	reader.onload = () => {
+		if (typeof reader.result !== "string") return;
+		const node = view.state.schema.nodes.image.create({
+			src: reader.result,
+			alt: file.name,
+		});
+		const tr =
+			pos == null
+				? view.state.tr.replaceSelectionWith(node)
+				: view.state.tr.insert(pos, node);
+		view.dispatch(tr);
+	};
+	reader.readAsDataURL(file);
+}
 
 interface RichTextEditorProps {
 	value: string;
@@ -53,6 +78,24 @@ export default function RichTextEditor({
 			attributes: {
 				class:
 					"prose prose-sm max-w-none focus:outline-none min-h-[180px] p-3 text-sm [&_blockquote]:border-l-2 [&_blockquote]:border-kumo-line [&_blockquote]:pl-3 [&_blockquote]:text-kumo-subtle [&_blockquote]:bg-kumo-tint [&_blockquote]:py-1 [&_blockquote]:my-2 [&_blockquote]:text-xs [&_blockquote]:rounded-r-sm",
+			},
+			handlePaste: (view, event) => {
+				const files = imageFilesFrom(event.clipboardData?.files);
+				if (files.length === 0) return false;
+				event.preventDefault();
+				for (const file of files) insertImageFileAt(view, file);
+				return true;
+			},
+			handleDrop: (view, event, _slice, moved) => {
+				if (moved) return false;
+				const files = imageFilesFrom(event.dataTransfer?.files);
+				if (files.length === 0) return false;
+				event.preventDefault();
+				const pos =
+					view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos ??
+					view.state.selection.from;
+				for (const file of files) insertImageFileAt(view, file, pos);
+				return true;
 			},
 		},
 		onUpdate: ({ editor }) => {
@@ -84,6 +127,29 @@ export default function RichTextEditor({
 		}
 		editor.chain().focus().extendMarkRange("link").setLink({ href: url }).run();
 	}, [editor]);
+
+	const imageInputRef = useRef<HTMLInputElement>(null);
+
+	const handleImageInputChange = useCallback(
+		(event: React.ChangeEvent<HTMLInputElement>) => {
+			if (!editor) return;
+			const files = imageFilesFrom(event.target.files);
+			event.target.value = "";
+			for (const file of files) {
+				const reader = new FileReader();
+				reader.onload = () => {
+					if (typeof reader.result !== "string" || editor.isDestroyed) return;
+					editor
+						.chain()
+						.focus()
+						.setImage({ src: reader.result, alt: file.name })
+						.run();
+				};
+				reader.readAsDataURL(file);
+			}
+		},
+		[editor],
+	);
 
 	if (!editor) return null;
 
@@ -202,6 +268,24 @@ export default function RichTextEditor({
 						aria-label="Horizontal rule"
 					/>
 				</Tooltip>
+				<Tooltip content="Insert image" side="bottom" asChild>
+					<Button
+						variant="ghost"
+						shape="square"
+						size="sm"
+						icon={<ImageIcon size={16} />}
+						onClick={() => imageInputRef.current?.click()}
+						aria-label="Insert image"
+					/>
+				</Tooltip>
+				<input
+					ref={imageInputRef}
+					type="file"
+					accept="image/*"
+					multiple
+					className="hidden"
+					onChange={handleImageInputChange}
+				/>
 
 				<div className="mx-1 h-5 w-px bg-kumo-fill" />
 
