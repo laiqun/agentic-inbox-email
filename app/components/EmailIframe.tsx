@@ -91,7 +91,7 @@ export default function EmailIframe({ body, autoSize }: EmailIframeProps) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: cid: https:; script-src 'unsafe-inline';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: cid: https: http:; script-src 'unsafe-inline';">
 <style>
 * { box-sizing: border-box; }
 html {
