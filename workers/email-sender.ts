@@ -67,6 +67,67 @@ export async function sendEmail(
 		}));
 	}
 
-	const result = await binding.send(message as any);
-	return { messageId: result.messageId };
+	let result: { messageId: string } | null = null;
+	let sendError: unknown = null;
+	try {
+		result = await binding.send(message as any);
+	} catch (e) {
+		sendError = e;
+	}
+
+	await reportSendDebug(binding, params, message, result, sendError);
+
+	if (sendError) throw sendError;
+	return { messageId: result!.messageId };
+}
+
+/**
+ * Temporary diagnostics for inline-image sending.
+ * Logs the exact payload handed to the EMAIL binding and delivers it as a
+ * plain-text follow-up email to the same recipient, so the result can be
+ * inspected in the recipient's mailbox.
+ */
+async function reportSendDebug(
+	binding: SendEmail,
+	params: SendEmailParams,
+	message: Record<string, unknown>,
+	result: { messageId: string } | null,
+	sendError: unknown,
+): Promise<void> {
+	try {
+		const cidRefs = params.html?.match(/cid:[^"'\s>]+/g) ?? [];
+		const attachments = (message.attachments as SendEmailParams["attachments"]) ?? [];
+		const lines = [
+			`time: ${new Date().toISOString()}`,
+			`to: ${JSON.stringify(params.to)}`,
+			`from: ${JSON.stringify(params.from)}`,
+			`subject: ${params.subject}`,
+			`hasHtml: ${Boolean(params.html)} (length ${params.html?.length ?? 0})`,
+			`hasText: ${Boolean(params.text)} (length ${params.text?.length ?? 0})`,
+			`cid refs in html: ${cidRefs.length > 0 ? cidRefs.join(", ") : "(none)"}`,
+			`attachments: ${attachments.length}`,
+			...attachments.map((att, i) =>
+				[
+					`  [${i}] filename=${att.filename}`,
+					`type=${att.type}`,
+					`disposition=${att.disposition}`,
+					`contentId=${att.contentId ?? "(none)"}`,
+					`base64Length=${att.content.length}`,
+					`base64Head=${att.content.slice(0, 48)}...`,
+				].join(" "),
+			),
+			`result: ${result ? `OK messageId=${result.messageId}` : `FAILED ${(sendError as Error)?.message} (code ${(sendError as { code?: string })?.code ?? "?"})`}`,
+		];
+		const log = lines.join("\n");
+		console.log(`[send-debug]\n${log}`);
+
+		await binding.send({
+			to: params.to,
+			from: params.from,
+			subject: `[send-debug] ${params.subject}`,
+			text: log,
+		} as any);
+	} catch (e) {
+		console.error("[send-debug] failed to report:", (e as Error).message);
+	}
 }
