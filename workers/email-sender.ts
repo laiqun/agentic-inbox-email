@@ -118,7 +118,6 @@ export async function sendEmail(
 
 	// EmailMessage accepts a single envelope recipient; send one copy each.
 	const recipients = [...new Set([...toList, ...ccList, ...bccList])];
-	const outcomes: string[] = [];
 	let firstMessageId: string | null = null;
 	let firstError: unknown = null;
 	for (const rcpt of recipients) {
@@ -127,58 +126,13 @@ export async function sendEmail(
 				new EmailMessage(from.email, rcpt, raw),
 			);
 			firstMessageId ??= result.messageId;
-			outcomes.push(`${rcpt}: OK messageId=${result.messageId}`);
 		} catch (e) {
 			firstError ??= e;
-			outcomes.push(
-				`${rcpt}: FAILED ${(e as Error)?.message} (code ${(e as { code?: string })?.code ?? "?"})`,
-			);
+			console.error(`Email delivery to ${rcpt} failed:`, (e as Error).message);
 		}
 	}
-
-	await reportSendDebug(binding, params, from, raw, outcomes);
 
 	if (!firstMessageId && firstError) throw firstError;
 	return { messageId: firstMessageId ?? "" };
 }
 
-/**
- * Temporary diagnostics for inline-image sending.
- * Logs the generated raw MIME (long lines truncated) and delivers it as a
- * plain-text follow-up email to the same recipients, so the exact bytes
- * handed to the Email Service can be inspected in the recipient's mailbox.
- */
-async function reportSendDebug(
-	binding: SendEmail,
-	params: SendEmailParams,
-	from: { email: string; name?: string },
-	raw: string,
-	outcomes: string[],
-): Promise<void> {
-	try {
-		const rawPreview = raw
-			.split(/\r?\n/)
-			.map((line) =>
-				line.length > 200 ? `${line.slice(0, 200)}... [${line.length} chars]` : line,
-			)
-			.join("\n");
-		const log = [
-			`time: ${new Date().toISOString()}`,
-			`envelope-from: ${from.email}`,
-			`delivery: ${outcomes.join(" | ")}`,
-			"",
-			"--- raw MIME (truncated lines) ---",
-			rawPreview,
-		].join("\n");
-		console.log(`[send-debug]\n${log}`);
-
-		await binding.send({
-			to: params.to,
-			from: params.from,
-			subject: `[send-debug] ${params.subject}`,
-			text: log,
-		} as any);
-	} catch (e) {
-		console.error("[send-debug] failed to report:", (e as Error).message);
-	}
-}
