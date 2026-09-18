@@ -71,16 +71,27 @@ export default function EmailIframe({ body, autoSize }: EmailIframeProps) {
 		// Height-reporting script: sends body.scrollHeight to the parent.
 		// Runs inside the opaque-origin sandbox so it has zero access to
 		// the parent page — it can only postMessage.
+		// A ResizeObserver keeps reporting while async content (images,
+		// fonts, remote resources) finishes loading, so the iframe always
+		// ends up tall enough for the full body.
 		const heightScript = autoSize
 			? `<script>
+				var lastH = 0;
 				function reportHeight() {
 					var h = document.body.scrollHeight;
-					if (h > 0) parent.postMessage({ __emailIframeHeight: true, height: h }, "*");
+					if (h > 0 && h !== lastH) {
+						lastH = h;
+						parent.postMessage({ __emailIframeHeight: true, height: h }, "*");
+					}
 				}
 				reportHeight();
 				setTimeout(reportHeight, 50);
 				setTimeout(reportHeight, 150);
 				setTimeout(reportHeight, 400);
+				if (typeof ResizeObserver !== "undefined") {
+					new ResizeObserver(reportHeight).observe(document.body);
+				}
+				document.addEventListener("load", reportHeight, true);
 			<\/script>`
 			: "";
 
