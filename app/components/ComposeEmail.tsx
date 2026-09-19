@@ -7,6 +7,7 @@ import { FloppyDiskIcon, PaperPlaneTiltIcon } from "@phosphor-icons/react";
 import { useParams } from "react-router";
 import { useComposeForm } from "~/hooks/useComposeForm";
 import RichTextEditor from "./RichTextEditor";
+import ComposeAttachments from "./ComposeAttachments";
 import { useUIStore } from "~/hooks/useUIStore";
 
 export default function ComposeEmail() {
@@ -31,6 +32,9 @@ export default function ComposeEmail() {
 		body,
 		setBody,
 		error,
+		attachments,
+		addAttachments,
+		removeAttachment,
 		isSavingDraft,
 		isSending,
 		formTitle,
@@ -106,6 +110,12 @@ export default function ComposeEmail() {
 						</Text>
 						<RichTextEditor value={body} onChange={setBody} />
 					</div>
+					<ComposeAttachments
+						attachments={attachments}
+						onAdd={addAttachments}
+						onRemove={removeAttachment}
+						disabled={isSending || isSavingDraft}
+					/>
 					<div className="flex justify-between items-center pt-2">
 						<Button
 							type="button"

@@ -7,6 +7,7 @@ import { FloppyDiskIcon, PaperPlaneTiltIcon, XIcon } from "@phosphor-icons/react
 import { useParams } from "react-router";
 import { useComposeForm } from "~/hooks/useComposeForm";
 import RichTextEditor from "./RichTextEditor";
+import ComposeAttachments from "./ComposeAttachments";
 
 export default function ComposePanel() {
 	const { mailboxId, folder } = useParams<{
@@ -28,6 +29,9 @@ export default function ComposePanel() {
 		body,
 		setBody,
 		error,
+		attachments,
+		addAttachments,
+		removeAttachment,
 		isSavingDraft,
 		isSending,
 		formTitle,
@@ -146,6 +150,13 @@ export default function ComposePanel() {
 							onChange={setBody}
 						/>
 					</div>
+
+					<ComposeAttachments
+						attachments={attachments}
+						onAdd={addAttachments}
+						onRemove={removeAttachment}
+						disabled={isSending || isSavingDraft}
+					/>
 				</div>
 
 				{/* Footer actions */}

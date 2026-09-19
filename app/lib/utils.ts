@@ -204,6 +204,33 @@ export interface OutgoingInlineAttachment {
 	contentId: string;
 }
 
+export interface OutgoingFileAttachment {
+	content: string; // base64 encoded
+	filename: string;
+	type: string;
+	disposition: "attachment";
+}
+
+export type OutgoingAttachment = OutgoingInlineAttachment | OutgoingFileAttachment;
+
+/** Approximate decoded byte size of a base64 payload, for display purposes. */
+export function base64DecodedSize(base64: string): number {
+	return Math.floor((base64.length * 3) / 4);
+}
+
+/** Read a File/Blob into a base64 string (without the data-URI prefix). */
+export function fileToBase64(file: File | Blob): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const reader = new FileReader();
+		reader.onload = () => {
+			const result = reader.result as string;
+			resolve(result.slice(result.indexOf(",") + 1));
+		};
+		reader.onerror = () => reject(reader.error);
+		reader.readAsDataURL(file);
+	});
+}
+
 const IMAGE_EXTENSIONS: Record<string, string> = {
 	"image/png": "png",
 	"image/jpeg": "jpg",

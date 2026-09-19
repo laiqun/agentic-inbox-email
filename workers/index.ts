@@ -37,6 +37,13 @@ const DraftBody = z.object({
 	bcc: z.string().optional(),
 	subject: z.string().optional(),
 	body: z.string(),
+	attachments: z.array(z.object({
+		content: z.string(), // base64 encoded
+		filename: z.string(),
+		type: z.string(),
+		disposition: z.enum(["attachment", "inline"]),
+		contentId: z.string().optional(),
+	})).optional(),
 	in_reply_to: z.string().optional(),
 	thread_id: z.string().optional(),
 	draft_id: z.string().optional(),
@@ -213,17 +220,18 @@ app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 
 app.post("/api/v1/mailboxes/:mailboxId/drafts", async (c: AppContext) => {
 	const mailboxId = c.req.param("mailboxId")!;
-	const { to, cc, bcc, subject, body, in_reply_to, thread_id, draft_id } = DraftBody.parse(await c.req.json());
+	const { to, cc, bcc, subject, body, attachments, in_reply_to, thread_id, draft_id } = DraftBody.parse(await c.req.json());
 	const stub = c.var.mailboxStub;
 	if (draft_id) await stub.deleteEmail(draft_id); // not atomic — create-then-delete would be safer
 	const messageId = crypto.randomUUID();
 	const now = new Date().toISOString();
+	const attachmentData = await storeAttachments(c.env.BUCKET, messageId, attachments);
 	await stub.createEmail(Folders.DRAFT, {
 		id: messageId, subject: subject || "", sender: mailboxId.toLowerCase(),
 		recipient: (to || "").toLowerCase(), cc: cc?.toLowerCase() || null, bcc: bcc?.toLowerCase() || null,
 		date: now, body, in_reply_to: in_reply_to || null, email_references: null,
 		thread_id: thread_id || in_reply_to || messageId,
-	}, []);
+	}, attachmentData);
 	return c.json({ id: messageId, status: "draft", subject: subject || "", recipient: to || "", date: now }, 201);
 });
 
@@ -402,7 +410,7 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 		thread_id: threadId, message_id: originalMessageId, raw_headers: JSON.stringify(parsedEmail.headers),
 	}, attachmentData);
     return;
-	const agentStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(mailboxId));
+	const agentStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(mailboxId!));
 	ctx.waitUntil(agentStub.fetch(new Request("https://agents/onNewEmail", {
 		method: "POST", headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({ mailboxId, emailId: messageId, sender: (parsedEmail.from?.address || "").toLowerCase(), subject: parsedEmail.subject || "", threadId }),
